@@ -216,12 +216,14 @@ MainWindow::MainWindow(std::string const cfg) {
         cpuTimer.start();
 
         pollHawkbitServer();
+        sendMsgToHawkbitServer();
 
         updatePollTimer = PeriodicTimer(std::chrono::seconds(serverPollTime));
 
         updatePollTimer.on_timeout([this]() {
                 // check for new poll time
                 pollHawkbitServer();
+                sendMsgToHawkbitServer();
 
                 if (updateAvailable == true) {
                         if (setUpdateAvailableInUbootEnv() != 0) {
@@ -383,6 +385,7 @@ size_t MainWindow::writeUbootVarToEnv(ubootEnvVars_t var, std::string val) {
 void MainWindow::checkIfUpdated(void) {
         if ((ustate == STATE_INSTALLED) || (ustate == STATE_TESTING)) {
                 cout << "Software Updated successfully!" << endl;
+                updateInstalled = true;
                 writeUbootVarToEnv(ENV_USTATE, ustateVal.at(STATE_OK));
         }
 }
@@ -556,4 +559,68 @@ bool MainWindow::pollHawkbitServer(void) {
         }
 
         return true;
+}
+
+bool MainWindow::sendMsgToHawkbitServer(void) {
+        HTTP updateServer;
+
+        std::time_t time = std::time({});
+        char timeString[std::size("yyyy-mm-ddThh:mm:ss")];
+        std::strftime(std::data(timeString), std::size(timeString), "%FT%T", std::gmtime(&time));
+        std::string sTime(timeString);
+        std::erase(sTime, '-');
+        std::erase(sTime, ':');
+
+        json serverData = json::parse(R"(
+        {
+                "id": "",
+                "time": "",
+                "mode": "replace",
+                "status": {
+                        "result": {
+                                "finished": "success"
+                        },
+                        "execution": "closed",
+                        "details": [
+                                ""
+                        ]
+                },
+                "data": {
+                        "App Version": "",
+                        "SW Version": "",
+                        "HW Version": "",
+                        "serial": "",
+                        "board": ""
+                }
+        })");
+
+        serverData["time"] = sTime.c_str();
+        serverData["data"].at("App Version") = EGT_SWUPDATE_VERSION;
+
+        std::string val;
+
+        getAttrFromCfg("suricatta", "id", val);
+        serverData["id"] = val;
+
+        getAttrFromCfg("identify", "SW Version", "value", val);
+        serverData["data"].at("SW Version") = val;
+
+        getAttrFromCfg("identify", "HW Version", "value", val);
+        serverData["data"].at("HW Version") = val;
+
+        getAttrFromCfg("identify", "serial", "value", val);
+        serverData["data"].at("serial") = val;
+
+        getAttrFromCfg("identify", "board", "value", val);
+        serverData["data"].at("board") = val;
+
+        if (updateInstalled == true) {
+                updateInstalled = false;
+
+                // acknowledge update to Hawkbit server
+                return updateServer.post(uri + "/deploymentBase/" + std::to_string(actionId) + "/feedback", sslkey, sslcert, serverData.dump().c_str(), serverData.dump().size());
+        } else {
+                // send version info to Hawkbit server
+                return updateServer.put(uri + "/configData", sslkey, sslcert, serverData.dump().c_str(), serverData.dump().size());
+        }
 }

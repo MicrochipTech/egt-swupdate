@@ -120,6 +120,7 @@ private:
 	void checkIfUpdated(void);
 	bool hashAppData(std::string file, std::string& digest);
 	bool pollHawkbitServer(void);
+	bool sendMsgToHawkbitServer(void);
 
 	PeriodicTimer cpuTimer;
 	CPUMonitorUsage cpuMon;
