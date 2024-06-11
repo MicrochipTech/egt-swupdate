@@ -16,6 +16,7 @@ int main(int argc, char** argv) {
 
 	options.add_options()
 	("h,help", "Show help")
+	("f,config", "Path to swupdate config file, defaults to /etc/swupdate.cfg if no arguments specified", cxxopts::value<std::string>()->default_value("/etc/swupdate.cfg"))
 	("v,version", "Show version");
 
 	auto args = options.parse(argc, argv);
@@ -29,7 +30,7 @@ int main(int argc, char** argv) {
 
 	Application app(argc, argv);
 
-	MainWindow window;
+	MainWindow window(args["config"].as<std::string>());
 
 	window.show();
 

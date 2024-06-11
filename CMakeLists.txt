@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.12)
 set(executable_name egt-swupdate)
 
 project(egt-swupdate
-        VERSION 0.1.0
+        VERSION 1.1.0
         LANGUAGES CXX
 )
 
@@ -19,6 +19,8 @@ find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 pkg_check_modules(EGT REQUIRED libegt)
 pkg_check_modules(CAIRO REQUIRED cairo)
+pkg_check_modules(LIBCONFIG REQUIRED libconfig++)
+pkg_check_modules(LIBUBOOTENV REQUIRED libubootenv)
 
 find_package(Git QUIET)
 if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
@@ -47,6 +49,8 @@ include_directories(include
         ${PROJECT_BINARY_DIR}
         ${CAIRO_INCLUDE_DIRS}
         ${EGT_INCLUDE_DIRS}
+        ${LIBCONFIG_INCLUDE_DIRS}
+        ${LIBUBOOTENV_INCLUDE_DIRS}
         external/cxxopts/include
 )
 
@@ -58,6 +62,8 @@ add_executable(${executable_name}
 target_link_libraries(
         ${executable_name}
         ${EGT_LIBRARIES}
+        ${LIBCONFIG_LIBRARIES}
+        ${LIBUBOOTENV_LIBRARIES}
         ${CMAKE_THREAD_LIBS_INIT}
 )
 
