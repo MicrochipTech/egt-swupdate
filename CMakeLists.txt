@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.12)
 set(executable_name egt-swupdate)
 
 project(egt-swupdate
-        VERSION 1.1.0
+        VERSION 2.0.0
         LANGUAGES CXX
 )
 
@@ -21,6 +21,8 @@ pkg_check_modules(EGT REQUIRED libegt)
 pkg_check_modules(CAIRO REQUIRED cairo)
 pkg_check_modules(LIBCONFIG REQUIRED libconfig++)
 pkg_check_modules(LIBUBOOTENV REQUIRED libubootenv)
+pkg_check_modules(LIBCRYPTO REQUIRED libcrypto)
+pkg_check_modules(CURL REQUIRED libcurl)
 
 find_package(Git QUIET)
 if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
@@ -51,12 +53,16 @@ include_directories(include
         ${EGT_INCLUDE_DIRS}
         ${LIBCONFIG_INCLUDE_DIRS}
         ${LIBUBOOTENV_INCLUDE_DIRS}
+        ${LIBCRYPTO_DIRS}
+        ${CURL_INCLUDE_DIRS}
         external/cxxopts/include
+        external/json/single_include
 )
 
 add_executable(${executable_name}
         src/main.cpp
         src/mainwin.cpp
+        src/http.cpp
 )
 
 target_link_libraries(
@@ -64,6 +70,8 @@ target_link_libraries(
         ${EGT_LIBRARIES}
         ${LIBCONFIG_LIBRARIES}
         ${LIBUBOOTENV_LIBRARIES}
+        ${LIBCRYPTO_LIBRARIES}
+        ${CURL_LIBRARIES}
         ${CMAKE_THREAD_LIBS_INIT}
 )
 

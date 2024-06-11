@@ -8,11 +8,18 @@
 #include <sstream>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
+#include <openssl/sha.h>
+#include <openssl/evp.h>
+#include <openssl/err.h>
+#include <nlohmann/json.hpp>
 #include "mainwin.h"
+#include "http.h"
 
 using namespace std;
 using namespace egt;
 using namespace egt::experimental;
+using json = nlohmann::json;
 
 static std::string getTime(void) {
         time_t sysTime = time(0);
@@ -23,12 +30,19 @@ MainWindow::MainWindow(std::string const cfg) {
         provisioned = false;
         ubootCtx = NULL;
         ustate = 0;
+        serverPollTime = 300;   // 5 min default
+        updateAvailable = false;
+        updateInstalled = false;
+
+        appDataFile = std::string("/opt/data/app_data.img");
+        hashAppData(appDataFile, appDataMd);
 
         initUbootEnvAccess();
         checkIfUpdated();
         readConfigFile(cfg);
+        getServerAttrs();
 
-        std::string boardVer, serNum, hwVer, swVer, appVer, appDataVer, certFile;
+        std::string boardVer, serNum, hwVer, swVer, appVer, certFile;
 
         getAttrFromCfg("identify", "board", "value", boardVer);
         getAttrFromCfg("identify", "serial", "value", serNum);
@@ -129,11 +143,25 @@ MainWindow::MainWindow(std::string const cfg) {
         app->margin(10);
         app->font(egt::Font(24));
 
+        auto hash = make_shared<Label>("App Data Hash:", AlignFlag::left);
+        hash->color(Palette::ColorId::bg, Palette::transparent);
+        hash->align(AlignFlag::left | AlignFlag::top);
+        hash->margin(10);
+        hash->font(egt::Font(24));
+
+        auto poll = make_shared<Label>("Next Check-in:", AlignFlag::left);
+        poll->color(Palette::ColorId::bg, Palette::transparent);
+        poll->align(AlignFlag::left | AlignFlag::top);
+        poll->margin(10);
+        poll->font(egt::Font(24));
+
         attrSizer->add(board);
         attrSizer->add(ser);
         attrSizer->add(hw);
         attrSizer->add(sw);
         attrSizer->add(app);
+        attrSizer->add(hash);
+        attrSizer->add(poll);
 
         auto boardName = make_shared<Label>(boardVer, AlignFlag::left);
         boardName->color(Palette::ColorId::bg, Palette::transparent);
@@ -165,13 +193,47 @@ MainWindow::MainWindow(std::string const cfg) {
         appVersion->margin(10);
         appVersion->font(egt::Font(24));
 
+        auto appHash = make_shared<Label>(appDataMd.substr(0, 22) + " ...", AlignFlag::left);
+        appHash->color(Palette::ColorId::bg, Palette::transparent);
+        appHash->align(AlignFlag::left | AlignFlag::top);
+        appHash->margin(10);
+        appHash->font(egt::Font(24));
+
+        pollTime = make_shared<Label>(" ", AlignFlag::left);
+        pollTime->color(Palette::ColorId::bg, Palette::transparent);
+        pollTime->align(AlignFlag::left | AlignFlag::top);
+        pollTime->margin(10);
+        pollTime->font(egt::Font(24));
+
         verSizer->add(boardName);
         verSizer->add(serialNum);
         verSizer->add(hwVersion);
         verSizer->add(swVersion);
         verSizer->add(appVersion);
+        verSizer->add(appHash);
+        verSizer->add(pollTime);
 
         cpuTimer.start();
+
+        pollHawkbitServer();
+
+        updatePollTimer = PeriodicTimer(std::chrono::seconds(serverPollTime));
+
+        updatePollTimer.on_timeout([this]() {
+                // check for new poll time
+                pollHawkbitServer();
+
+                if (updateAvailable == true) {
+                        if (setUpdateAvailableInUbootEnv() != 0) {
+                                cout << "Error setting u-boot env, not rebooting" << endl;
+                        } else {
+                                rebootWin.startRebootTimer(10);
+                                rebootWin.show_modal(true);
+                        }
+                }
+        });
+
+        updatePollTimer.start();
 }
 
 MainWindow::~MainWindow() {
@@ -323,4 +385,175 @@ void MainWindow::checkIfUpdated(void) {
                 cout << "Software Updated successfully!" << endl;
                 writeUbootVarToEnv(ENV_USTATE, ustateVal.at(STATE_OK));
         }
+}
+
+size_t MainWindow::setUpdateAvailableInUbootEnv(void) {
+        int ret;
+
+        if ((ret = libuboot_open(ubootCtx)) < 0) {
+		cout << "Cannot read environment" << endl;
+                return ret;
+	}
+
+        if (setUbootEnvVar(ENV_UPGRADE, "1") != 0) {
+                return -1;
+        }
+
+        if (writeUbootEnv == true) {
+                cout << "Writing u-boot env to memory." << endl;
+                writeUbootEnv = false;
+
+                ret = libuboot_env_store(ubootCtx);
+
+                if (ret) {
+                        cout << "Error storing the env" << endl;
+                        return -1;
+                }
+        }
+
+        libuboot_close(ubootCtx);
+
+        return 0;
+}
+
+bool MainWindow::hashAppData(std::string file, std::string& digest) {
+        EVP_MD_CTX *mdCtx;
+        const EVP_MD *mdAlg = EVP_get_digestbyname("SHA256");
+        unsigned char buf[HASH_CHUNK_SIZE];
+        unsigned char md[SHA256_DIGEST_LENGTH];
+        FILE *appData;
+        unsigned int cnt = 0;
+
+        std::stringstream hash;
+
+        appData = fopen(file.c_str(), "r");
+
+        if (!appData) {
+                cout << "Error opening app data file" << endl;
+                return false;
+        }
+
+        mdCtx = EVP_MD_CTX_new();
+        if (!EVP_DigestInit_ex(mdCtx, mdAlg, NULL)) {
+                cout << "EVP_DigestInit failed" << endl;
+                EVP_MD_CTX_free(mdCtx);
+                return false;
+        }
+
+        do {
+                cnt = fread(buf, 1, HASH_CHUNK_SIZE, appData);
+                if (!EVP_DigestUpdate(mdCtx, buf, cnt)) {
+                        cout << "EVP_DigestUpdate failed" << endl;
+                        EVP_MD_CTX_free(mdCtx);
+                        return false;
+                }
+        } while (cnt > 0);
+
+        unsigned int outlen;
+        if (!EVP_DigestFinal_ex(mdCtx, md, &cnt)) {
+                cout << "EVP_DigestFinal failed" << endl;
+                EVP_MD_CTX_free(mdCtx);
+                return false;
+        }
+
+        EVP_MD_CTX_free(mdCtx);
+
+        fclose(appData);
+
+        hash << std::hex << std::uppercase << std::setfill('0');
+
+        for (const auto &c: md) {
+                hash << std::setw(2) << (int)c;
+        }
+
+        digest = hash.str();
+
+        return true;
+}
+
+void MainWindow::getServerAttrs(void) {
+        std::string tenant, id;
+        getAttrFromCfg("suricatta", "url", uri);
+
+        // if we have an id field in the config object, then a config file was passed to the program
+        // construct URL from config file, otherwise, command line arguments were used and URL is fully formed
+        if (getAttrFromCfg("suricatta", "id", id) == true) {
+                getAttrFromCfg("suricatta", "tenant", tenant);
+                uri.append("/" + tenant + "/controller/v1/" + id);
+        }
+
+        if (uri.contains("https")) {
+                getAttrFromCfg("suricatta", "sslkey", sslkey);
+                getAttrFromCfg("suricatta", "sslcert", sslcert);
+        }
+}
+
+std::string MainWindow::getTime(void) {
+        time_t sysTime = time(0);
+        return ctime(&sysTime);
+}
+
+std::string MainWindow::getTime(ssize_t future) {
+        time_t now = time(0);
+        time_t futureTime = now + future;
+
+        return ctime(&futureTime);
+}
+
+bool MainWindow::pollHawkbitServer(void) {
+        HTTP updateServer;
+        std::string res;
+
+        res = updateServer.get(uri, sslkey, sslcert);
+
+        auto updateServerJson = nlohmann::json::parse(res);
+
+        // check for config and get polling time
+        if (updateServerJson.contains("config")) {
+                const auto& config  = updateServerJson.at("config");
+
+                if (config.contains("polling")) {
+                        const auto& polling = config.at("polling");
+                        std::istringstream ss;
+                        std::tm t;
+
+                        ss.str(polling.at("sleep"));
+                        ss >> std::get_time(&t, "%H:%M:%S");
+                        serverPollTime = (t.tm_hour * 3600) + (t.tm_min * 60) + (t.tm_sec);
+                        //cout << "Next poll time is " << getTime(serverPollTime) << endl;
+                        pollTime->text(getTime(serverPollTime));
+                } else {
+                        cout << "Warning, did not get polling time from server, setting to default 5 minutes" << endl;
+                        serverPollTime = 300;
+                }
+
+        } else {
+                cout << "Error parsing JSON from server, no config node!" << endl;
+                return false;
+        }
+
+        if (updateServerJson.contains("_links")) {
+                if (updateServerJson["_links"].contains("deploymentBase")) {
+                        const auto& deploymentBase = updateServerJson.at("_links").at("deploymentBase");
+
+                        // get actionId
+                        std::string s = deploymentBase.at("href");
+                        unsigned start = s.find("deploymentBase/");
+                        unsigned startSize = std::string("deploymentBase/").size();
+                        unsigned startPos = start + startSize;
+                        unsigned end = s.find("?");
+
+                        std::string id = s.substr(startPos, end - startPos);
+
+                        actionId = stoi(id);
+
+                        // check if an update was recently installed or if one is available
+                        if (updateInstalled == false) {
+                                cout << "Update available with actionId: " << actionId << endl;
+                                updateAvailable = true;
+                        }
+                }
+        }
+
+        return true;
 }

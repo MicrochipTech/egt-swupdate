@@ -6,6 +6,7 @@
 
 #include <iostream>
 #include <cxxopts.hpp>
+#include <egt/themes/lapis.h>
 #include "mainwin.h"
 
 using namespace std;
@@ -29,6 +30,8 @@ int main(int argc, char** argv) {
 	}
 
 	Application app(argc, argv);
+
+	global_theme(std::make_unique<LapisTheme>());
 
 	MainWindow window(args["config"].as<std::string>());
 
