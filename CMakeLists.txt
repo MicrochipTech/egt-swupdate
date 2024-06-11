@@ -40,7 +40,10 @@ if(NOT EXISTS "${PROJECT_SOURCE_DIR}/external/cxxopts/CMakeLists.txt")
 endif()
 add_subdirectory(external/cxxopts)
 
-include_directories(include 
+include(CheckIPOSupported)
+check_ipo_supported(RESULT supported OUTPUT error)
+
+include_directories(include
         ${PROJECT_BINARY_DIR}
         ${CAIRO_INCLUDE_DIRS}
         ${EGT_INCLUDE_DIRS}
@@ -59,3 +62,10 @@ target_link_libraries(
 )
 
 install(TARGETS ${executable_name} DESTINATION bin)
+
+if(supported)
+    message(STATUS "IPO / LTO enabled")
+    set_property(TARGET ${executable_name} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+else()
+    message(STATUS "IPO / LTO not supported: <${error}>")
+endif()
